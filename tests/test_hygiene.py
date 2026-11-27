@@ -160,8 +160,10 @@ class RepositoryHygieneTests(unittest.TestCase):
     def test_publish_uses_oidc_environment(self):
         text = (ROOT / ".github" / "workflows" / "publish.yml").read_text("utf-8")
         self.assertIn("id-token: write", text)
-        self.assertIn("environment: pypi", text)
-        self.assertIn("pypa/gh-action-pypi-publish@release/v1", text)
+        self.assertIn("name: pypi", text)
+        self.assertIn("pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086", text)
+        self.assertIn("--require-hashes -r .github/requirements-build.txt", text)
+        self.assertNotIn("workflow_dispatch", text)
 
     def test_required_project_files_exist(self):
         for name in ("README.md", "SECURITY.md", "CONTRIBUTING.md", "CODE_OF_CONDUCT.md", "CHANGELOG.md", "MANIFEST.in"):
