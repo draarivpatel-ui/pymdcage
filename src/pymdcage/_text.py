@@ -108,37 +108,25 @@ def decode_html_entities(text: str, rounds: int = 4) -> str:
     return current
 
 
-def percent_decode_ascii(text: str, rounds: int = 2) -> str:
-    """Decode ASCII percent escapes used to obscure schemes and hosts."""
+def percent_decode_ascii(text: str) -> str:
+    """Recursively decode ASCII percent escapes in one linear pass.
 
-    current = text
-    for _round in range(rounds):
-        if "%" not in current:
-            break
-        output = []
-        index = 0
-        size = len(current)
-        changed = False
-        while index < size:
-            if (
-                current[index] == "%"
-                and index + 2 < size
-                and current[index + 1] in "0123456789abcdefABCDEF"
-                and current[index + 2] in "0123456789abcdefABCDEF"
-            ):
-                value = int(current[index + 1:index + 3], 16)
-                if value < 0x80:
-                    output.append(chr(value))
-                    index += 3
-                    changed = True
-                    continue
-            output.append(current[index])
-            index += 1
-        decoded = "".join(output)
-        if not changed or decoded == current:
-            break
-        current = decoded
-    return current
+    Every collapse removes two characters, so recursive decoding cannot
+    expand the input or become quadratic even for deeply nested ``%25`` chains.
+    """
+
+    if "%" not in text:
+        return text
+    hexadecimal = "0123456789abcdefABCDEF"
+    output = []
+    for character in text:
+        output.append(character)
+        while len(output) >= 3 and output[-3] == "%" and output[-2] in hexadecimal and output[-1] in hexadecimal:
+            value = int(output[-2] + output[-1], 16)
+            if value >= 0x80:
+                break
+            output[-3:] = [chr(value)]
+    return "".join(output)
 
 
 def markdown_unescape(text: str) -> str:

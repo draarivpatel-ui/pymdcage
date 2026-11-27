@@ -38,6 +38,28 @@ class MissingReferenceReparseTests(unittest.TestCase):
         self.check_prefixed_link("[\n\n][x](javascript:alert(1))")
 
 
+class NestedPercentEncodingRegressionTests(unittest.TestCase):
+    def test_deeply_nested_percent_encoded_schemes_are_blocked(self):
+        sources = [
+            "[x](%25256Aavascript%25253Aalert(1))",
+            "[x](%2525256Aavascript%2525253Aalert(1))",
+            "[x](%252525256Aavascript%252525253Aalert(1))",
+        ]
+        first = "%6A"
+        colon = "%3A"
+        for _round in range(49):
+            first = first.replace("%", "%25")
+            colon = colon.replace("%", "%25")
+        sources.append("[x](" + first + "avascript" + colon + "alert(1))")
+        for source in sources:
+            with self.subTest(length=len(source)):
+                result = sanitize_markdown(source)
+                self.assertFalse(audit_markdown(source).safe)
+                self.assertEqual(result.markdown, "x")
+                self.assertTrue(any(finding.code == CODE["DANGEROUS_SCHEME"] for finding in result.findings))
+                assert_output_is_safe(self, source, result)
+
+
 class NestedConstructRegressionTests(unittest.TestCase):
     def check_nested(self, source):
         result = sanitize_markdown(source)
