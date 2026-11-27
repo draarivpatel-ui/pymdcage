@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pymdcage"
+version = "1.0.0"
+description = "Zero-dependency Markdown security sanitizer, link auditor, SSRF guard, and prompt-injection defense library"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "draarivpatel-ui contributors" }]
+keywords = [
+    "cwe-400",
+    "cwe-79",
+    "cwe-918",
+    "markdown",
+    "prompt-injection",
+    "sanitizer",
+    "security",
+    "ssrf",
+    "xss",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Markup",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.scripts]
+pymdcage = "pymdcage.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/draarivpatel-ui/pymdcage"
+Repository = "https://github.com/draarivpatel-ui/pymdcage"
+Issues = "https://github.com/draarivpatel-ui/pymdcage/issues"
+Documentation = "https://github.com/draarivpatel-ui/pymdcage#readme"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["pymdcage*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+pymdcage = ["py.typed"]

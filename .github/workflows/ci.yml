@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run unit tests
+        run: PYTHONPATH=src python3 -m unittest discover -s tests
+      - name: Run CLI smoke tests
+        run: |
+          printf '# Safe\n\n[docs](https://example.com/docs)\n' > /tmp/pymdcage-ci-safe.md
+          PYTHONPATH=src python3 -m pymdcage audit /tmp/pymdcage-ci-safe.md --json
+          PYTHONPATH=src python3 -m pymdcage sanitize /tmp/pymdcage-ci-safe.md --out /tmp/pymdcage-ci-clean.md
+          PYTHONPATH=src python3 -m pymdcage extract-links /tmp/pymdcage-ci-safe.md --json
+          PYTHONPATH=src python3 -m pymdcage --version
+          printf '[x](javascript:alert(1))\n' > /tmp/pymdcage-ci-xss.md
+          if PYTHONPATH=src python3 -m pymdcage audit /tmp/pymdcage-ci-xss.md --json; then
+            echo 'XSS payload unexpectedly passed' >&2
+            exit 1
+          else
+            code=$?
+            if [ "$code" -ne 1 ]; then
+              echo "expected audit exit 1, got $code" >&2
+              exit 1
+            fi
+          fi
+      - name: Install build tooling
+        run: python3 -m pip install build
+      - name: Build source and wheel distributions
+        run: python3 -m build
+      - name: Verify distribution contents
+        run: python3 scripts/check_dist.py dist
