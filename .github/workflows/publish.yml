@@ -31,7 +31,7 @@ jobs:
         run: python3 -m pip install --require-hashes -r .github/requirements-build.txt
 
       - name: Build distributions
-        run: python3 -m build --no-isolation
+        run: python3 -m build
 
       - name: Verify distribution contents
         run: python3 scripts/check_dist.py dist
