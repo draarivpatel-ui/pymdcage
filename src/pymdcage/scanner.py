@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import bisect
+import unicodedata
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -292,10 +293,20 @@ def _hidden_category(character: str) -> Optional[str]:
     if 0x202A <= codepoint <= 0x202E or 0x2066 <= codepoint <= 0x2069 or codepoint in (0x200E, 0x200F, 0x061C):
         return "bidi"
     if (
-        0x200B <= codepoint <= 0x200D
+        0x0600 <= codepoint <= 0x0605
+        or 0x0890 <= codepoint <= 0x0891
+        or 0x200B <= codepoint <= 0x200D
         or 0x2060 <= codepoint <= 0x206F
-        or codepoint in (0x00AD, 0x034F, 0x180E, 0xFEFF)
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xFFF9 <= codepoint <= 0xFFFB
+        or 0xE0100 <= codepoint <= 0xE01EF
+        or 0x13430 <= codepoint <= 0x1343F
+        or 0x1BCA0 <= codepoint <= 0x1BCA3
+        or 0x1D173 <= codepoint <= 0x1D17A
+        or codepoint in (0x00AD, 0x034F, 0x06DD, 0x070F, 0x08E2, 0x115F, 0x1160, 0x180E, 0x3164, 0xFEFF, 0xFFA0, 0x110BD, 0x110CD)
     ):
+        return "invisible"
+    if unicodedata.category(character) == "Cf":
         return "invisible"
     if (codepoint < 0x20 and character not in "\n\r\t") or 0x7F <= codepoint <= 0x9F:
         return "control"
@@ -483,6 +494,107 @@ def _is_closing_fence(line: str, marker: str, opening_length: int) -> bool:
     return True
 
 
+def _expanded_indent(body: str) -> Tuple[int, int]:
+    indent = 0
+    index = 0
+    while index < len(body) and body[index] in " \t":
+        if body[index] == "\t":
+            indent = ((indent // 4) + 1) * 4
+        else:
+            indent += 1
+        index += 1
+    return indent, index
+
+
+def _block_rest(body: str) -> Optional[str]:
+    indent, index = _expanded_indent(body)
+    if indent > 3:
+        return None
+    return body[index:]
+
+
+def _tag_opens_line(rest: str, tag: str) -> bool:
+    lowered = rest.lower()
+    prefix = "<" + tag
+    if not lowered.startswith(prefix):
+        return False
+    if len(rest) == len(prefix):
+        return True
+    following = rest[len(prefix)]
+    return following.isspace() or following in "/>"
+
+
+def _html_block_start(line: str) -> Optional[Tuple[Optional[str], bool]]:
+    """Return a conservative HTML block terminator and blank-line flag."""
+
+    body = line_body(line)
+    rest = _block_rest(body)
+    if rest is None or not rest.startswith("<") or len(rest) < 2:
+        return None
+    lowered = rest.lower()
+    if lowered.startswith("<!--"):
+        return "-->", False
+    if lowered.startswith("<![cdata["):
+        return "]]>", False
+    if lowered.startswith("<?"):
+        return "?>", False
+    if len(rest) > 2 and rest.startswith("<!") and rest[2].isalpha():
+        return ">", False
+    for tag in ("script", "pre", "style", "textarea"):
+        if _tag_opens_line(rest, tag):
+            return "</" + tag, False
+    if rest[1].isalpha() or (rest[1] == "/" and len(rest) > 2 and rest[2].isalpha()):
+        return None, True
+    return None
+
+
+def _atomic_inline_boundary(line: str) -> bool:
+    """Return true for one-line blocks that never continue inline text on later lines."""
+
+    body = line_body(line)
+    rest = _block_rest(body)
+    if rest is None or not rest:
+        return False
+    hash_count = 0
+    while hash_count < len(rest) and rest[hash_count] == "#":
+        hash_count += 1
+    if 1 <= hash_count <= 6 and (hash_count == len(rest) or rest[hash_count] in " \t"):
+        return True
+    compact = rest.replace(" ", "").replace("\t", "")
+    if len(compact) >= 3 and compact[0] in "*-_" and all(character == compact[0] for character in compact):
+        return True
+    return bool(compact) and all(character == "=" for character in compact)
+
+
+def _is_hard_inline_boundary(line: str) -> bool:
+    """Return true for lines that cannot be inside the preceding inline paragraph."""
+
+    body = line_body(line)
+    stripped = body.strip(" \t")
+    if not stripped:
+        return True
+    rest = _block_rest(body)
+    if rest is None or not rest:
+        return False
+
+    if _atomic_inline_boundary(line):
+        return True
+
+    if rest.startswith(">"):
+        return True
+    if rest[0] in "-+*" and (len(rest) == 1 or rest[1] in " \t"):
+        return True
+    digit_count = 0
+    while digit_count < len(rest) and rest[digit_count].isdigit() and digit_count < 9:
+        digit_count += 1
+    if digit_count and digit_count < len(rest) and rest[digit_count] in ".)":
+        after_marker = digit_count + 1
+        if after_marker == len(rest) or rest[after_marker] in " \t":
+            return True
+
+    return _html_block_start(line) is not None
+
+
 def classify_lines(text: str, policy: MdPolicy) -> Tuple[List[str], List[str], List[ReferenceDefinition], List[int], int, Optional[int]]:
     lines = split_lines(text)
     if len(lines) > policy.max_lines:
@@ -500,6 +612,9 @@ def classify_lines(text: str, policy: MdPolicy) -> Tuple[List[str], List[str], L
     fence_marker = ""
     fence_length = 0
     fence_open_index = -1
+    in_html_block = False
+    html_terminator: Optional[str] = None
+    html_end_on_blank = False
 
     for index, line in enumerate(lines):
         if in_fence:
@@ -507,6 +622,31 @@ def classify_lines(text: str, policy: MdPolicy) -> Tuple[List[str], List[str], L
             if _is_closing_fence(line, fence_marker, fence_length):
                 in_fence = False
             continue
+
+        body = line_body(line)
+        blank = not body.strip(" \t")
+        if in_html_block:
+            kinds.append("text")
+            if html_end_on_blank:
+                ends_here = blank
+            else:
+                ends_here = html_terminator is not None and html_terminator in body.lower()
+            if ends_here:
+                in_html_block = False
+                html_terminator = None
+                html_end_on_blank = False
+            continue
+
+        html_start = _html_block_start(line)
+        if html_start is not None:
+            kinds.append("text")
+            terminator, end_on_blank = html_start
+            if end_on_blank or terminator is None or terminator not in body.lower():
+                in_html_block = True
+                html_terminator = terminator
+                html_end_on_blank = end_on_blank
+            continue
+
         marker = _fence_marker(line)
         if marker is not None:
             kinds.append("fence")
@@ -808,6 +948,50 @@ def _replace_construct(
         out.append(replacement)
 
 
+def _css_unescape(text: str) -> str:
+    """Decode CSS escape sequences used to hide url(), expression(), and schemes."""
+
+    output = []
+    index = 0
+    size = len(text)
+    hexadecimal = "0123456789abcdefABCDEF"
+    while index < size:
+        if text[index] != "\\":
+            output.append(text[index])
+            index += 1
+            continue
+        index += 1
+        if index >= size:
+            break
+        character = text[index]
+        if character in "\r\n\f":
+            if character == "\r" and index + 1 < size and text[index + 1] == "\n":
+                index += 2
+            else:
+                index += 1
+            continue
+        if character in hexadecimal:
+            start = index
+            digits = 0
+            while index < size and digits < 6 and text[index] in hexadecimal:
+                index += 1
+                digits += 1
+            value = int(text[start:index], 16)
+            if index < size and text[index] in " \t\r\n\f":
+                if text[index] == "\r" and index + 1 < size and text[index + 1] == "\n":
+                    index += 2
+                else:
+                    index += 1
+            if value <= 0 or value > 0x10FFFF or 0xD800 <= value <= 0xDFFF:
+                output.append("\ufffd")
+            else:
+                output.append(chr(value))
+            continue
+        output.append(character)
+        index += 1
+    return "".join(output)
+
+
 def _scan_html_attributes(raw: str, policy: MdPolicy) -> Tuple[str, bool, str, bool, bool]:
     """Return name, activity, reason, closing flag, and self-closing flag."""
 
@@ -833,8 +1017,13 @@ def _scan_html_attributes(raw: str, policy: MdPolicy) -> Tuple[str, bool, str, b
     while index < size:
         while index < size and raw[index].isspace():
             index += 1
-        if index >= size or raw[index] in ">/":
+        if index >= size or raw[index] == ">":
             break
+        if raw[index] == "/":
+            if index + 1 < size and raw[index + 1] == ">":
+                break
+            index += 1
+            continue
         attr_start = index
         while index < size and not raw[index].isspace() and raw[index] not in "=/>":
             index += 1
@@ -875,7 +1064,8 @@ def _scan_html_attributes(raw: str, policy: MdPolicy) -> Tuple[str, bool, str, b
                     continue
                 without_comments.append(decoded_style[comment_index])
                 comment_index += 1
-            compact = "".join("".join(without_comments).split()).replace("\\", "")
+            unescaped_style = _css_unescape("".join(without_comments))
+            compact = "".join(unescaped_style.split()).replace("\\", "")
             if "expression(" in compact or "javascript:" in compact or "vbscript:" in compact or "url(" in compact or "@import" in compact or "behavior:" in compact:
                 return name, True, "dangerous style attribute", closing, self_closing
         if attr_name == "srcdoc":
@@ -1109,7 +1299,7 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
         )
 
     out: List[str] = []
-    stack: List[Tuple[int, int, int, bool]] = []
+    stack: List[Tuple[int, int, int, bool, int]] = []
     html_stack: List[Tuple[str, bool]] = []
     void_html_tags = frozenset({
         "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
@@ -1119,6 +1309,7 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
     index = 0
     size = len(text)
     expansion_bytes = 0
+    mutation_count = 0
 
     while index < size:
         while range_index < len(ranges) and index > ranges[range_index][0]:
@@ -1167,6 +1358,7 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
                     if removed and not angle.html_closing:
                         replacement = ""
                 if replacement != exact:
+                    mutation_count += 1
                     out.append(replacement)
                 else:
                     out.append(exact)
@@ -1175,7 +1367,7 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
 
         if character == "!" and index + 1 < size and text[index + 1] == "[":
             out.append("![")
-            stack.append((index, len(out) - 1, len(out), True))
+            stack.append((index, len(out) - 1, len(out), True, mutation_count))
             state.observe_nesting(len(stack))
             if len(stack) > policy.max_nesting_depth:
                 raise MdCageError(
@@ -1188,7 +1380,7 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
 
         if character == "[":
             out.append("[")
-            stack.append((index, len(out) - 1, len(out), False))
+            stack.append((index, len(out) - 1, len(out), False, mutation_count))
             state.observe_nesting(len(stack))
             if len(stack) > policy.max_nesting_depth:
                 raise MdCageError(
@@ -1200,7 +1392,7 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
             continue
 
         if character == "]" and stack:
-            opener_position, opener_piece, content_piece, is_image = stack.pop()
+            opener_position, opener_piece, content_piece, is_image, opener_mutation_count = stack.pop()
             label_start = opener_position + (2 if is_image else 1)
             label_length = index - label_start
             label_raw: Optional[str] = None
@@ -1229,9 +1421,11 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
                         reference = references.get(reference_label)
                         if reference is not None and label_raw is None:
                             label_raw = text[label_start:index]
+                    if reference is not None:
+                        construct = "reference-image" if is_image else "reference"
                 else:
                     label_raw = text[label_start:index]
-                construct = "reference-image" if is_image else "reference"
+                    construct = "reference-image" if is_image else "reference"
             elif references and label_length <= 999:
                 label_raw = text[label_start:index]
                 reference_label = normalize_reference_label(label_raw)
@@ -1351,6 +1545,10 @@ def scan_inline_segment(text: str, offset: int, policy: MdPolicy, references: Ma
                     )
                     replacement = plain_label(label_raw)
 
+                if replacement == exact and mutation_count != opener_mutation_count:
+                    replacement = plain_label(label_raw)
+                if replacement != exact:
+                    mutation_count += 1
                 replacement_bytes = len(replacement.encode("utf-8"))
                 exact_bytes = len(exact.encode("utf-8"))
                 if replacement_bytes > exact_bytes:
@@ -1393,6 +1591,19 @@ def _line_pieces(lines: Sequence[str], kinds: Sequence[str]) -> List[Tuple[str, 
     for index, line in enumerate(lines):
         kind = kinds[index]
         if kind == "text":
+            blank = not line_body(line).strip(" \t")
+            if blank:
+                flush()
+                pieces.append(("text", line, index))
+                continue
+            if _is_hard_inline_boundary(line):
+                flush()
+                if _atomic_inline_boundary(line):
+                    pieces.append(("text", line, index))
+                    continue
+                current_start = index
+                current.append(line)
+                continue
             if not current:
                 current_start = index
             current.append(line)

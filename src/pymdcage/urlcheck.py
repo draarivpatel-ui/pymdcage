@@ -4,7 +4,7 @@ from __future__ import annotations
 import ipaddress
 from dataclasses import dataclass
 from typing import Optional, Union
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from ._text import canonicalize_url_text
 from .errors import MDCAGE_ERROR_CODES as ERROR
@@ -140,6 +140,27 @@ def _ip_is_blocked(address: Union[ipaddress.IPv4Address, ipaddress.IPv6Address])
     return not address.is_global
 
 
+def _canonicalize_host(host: str) -> Optional[str]:
+    """Decode browser-style Unicode and percent-encoded host names for inspection."""
+
+    try:
+        decoded = unquote(host, errors="strict")
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not decoded:
+        return ""
+    if ":" in decoded:
+        return decoded.lower()
+    for character in decoded:
+        codepoint = ord(character)
+        if codepoint <= 0x20 or codepoint == 0x7F or character in "#%/<>:?@[\\]^|":
+            return None
+    try:
+        return decoded.encode("idna").decode("ascii").lower()
+    except (UnicodeError, ValueError):
+        return None
+
+
 def _host_is_private(host: str) -> bool:
     normalized = host.strip().lower().rstrip(".")
     if not normalized:
@@ -229,6 +250,20 @@ def inspect_url(raw: str, policy: MdPolicy, *, image: bool = False) -> UrlInspec
                 external=True,
                 severity="high",
             )
+        canonical_host = _canonicalize_host(host)
+        if host and canonical_host is None:
+            return UrlInspection(
+                raw,
+                compact,
+                False,
+                ERROR["MALFORMED_URL"],
+                "URL host is malformed",
+                scheme=scheme,
+                external=True,
+                host=host,
+                severity="high",
+            )
+        host = canonical_host or ""
         private_host = bool(host) and _host_is_private(host)
         if image:
             if private_host:
